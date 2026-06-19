@@ -19,22 +19,53 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, Tabl
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 
-# --- CONFIGURACIÓN Y BASE DE DATOS ---
-# La ruta de la base de datos es configurable por variable de entorno IZAJE_DB_PATH.
-# Esto permite sacar el archivo de carpetas sincronizadas (OneDrive/Dropbox), que
-# provocan bloqueos de archivo, y apuntarlo a un volumen persistente en producción.
+# --- CONFIGURACIÓN Y BASE DE DATOS (DUAL: Postgres/Supabase o SQLite) ---
+# En producción usa Postgres (Supabase) si encuentra una cadena de conexión.
+# En local, si no hay credenciales, usa SQLite automáticamente: el mismo código
+# funciona en ambos entornos sin cambios.
+#
+# La cadena de conexión se busca en este orden:
+#   1. st.secrets["postgres"]["url"]   (Streamlit Community Cloud)
+#   2. variable de entorno DATABASE_URL  /  SUPABASE_DB_URL
 BASE_DATA_DIR = os.environ.get("IZAJE_DATA_DIR", os.path.dirname(os.path.abspath(__file__)))
 DB_FILE = os.environ.get("IZAJE_DB_PATH", os.path.join(BASE_DATA_DIR, "izaje.db"))
 LOGO_APP = None
 LOGO_CLIENTE = None
 
-def _conectar(db_path):
-    """Abre una conexión SQLite endurecida para acceso concurrente.
 
-    WAL permite lecturas simultáneas mientras se escribe y busy_timeout evita
-    los errores 'database is locked' cuando varios usuarios operan a la vez.
+def _detectar_postgres():
+    """Devuelve la cadena de conexión Postgres si está configurada, o None."""
+    try:
+        if hasattr(st, "secrets") and "postgres" in st.secrets:
+            cs = st.secrets["postgres"].get("url") or st.secrets["postgres"].get("connection_string")
+            if cs:
+                return cs
+        if hasattr(st, "secrets") and "DATABASE_URL" in st.secrets:
+            return st.secrets["DATABASE_URL"]
+    except Exception:
+        pass
+    return os.environ.get("DATABASE_URL") or os.environ.get("SUPABASE_DB_URL")
+
+
+PG_CONN_STRING = _detectar_postgres()
+USE_POSTGRES = bool(PG_CONN_STRING)
+
+
+def _adapt(query):
+    """Traduce los placeholders '?' (estilo SQLite) a '%s' (estilo psycopg2)."""
+    return query.replace("?", "%s") if USE_POSTGRES else query
+
+
+def _conectar(db_path=None):
+    """Abre una conexión a Postgres (producción) o a SQLite (local).
+
+    - Postgres/Supabase maneja la concurrencia de forma nativa.
+    - SQLite se endurece con WAL + busy_timeout para evitar 'database is locked'.
     """
-    conn = sqlite3.connect(db_path, timeout=30)
+    if USE_POSTGRES:
+        import psycopg2
+        return psycopg2.connect(PG_CONN_STRING)
+    conn = sqlite3.connect(db_path or DB_FILE, timeout=30)
     try:
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA busy_timeout=30000;")
@@ -50,17 +81,21 @@ def ejecutar_query(db_path, query, params=(), commit=False):
     conn = _conectar(db_path)
     cursor = conn.cursor()
     try:
-        cursor.execute(query, params)
+        cursor.execute(_adapt(query), params)
         if commit:
             conn.commit()
-        return cursor.fetchall()
+        try:
+            return cursor.fetchall()
+        except Exception:
+            # INSERT/UPDATE/DELETE no devuelven filas en Postgres.
+            return []
     finally:
         conn.close()
 
 def obtener_dataframe(db_path, query, params=()):
     conn = _conectar(db_path)
     try:
-        df = pd.read_sql_query(query, conn, params=params)
+        df = pd.read_sql_query(_adapt(query), conn, params=params)
         return df
     finally:
         conn.close()
@@ -68,40 +103,44 @@ def obtener_dataframe(db_path, query, params=()):
 def init_db():
     conn = _conectar(DB_FILE)
     cursor = conn.cursor()
-    
-    cursor.execute("""
+
+    # Tipos de columna según el motor: SERIAL/TIMESTAMP en Postgres, AUTOINCREMENT/DATETIME en SQLite.
+    pk = "SERIAL PRIMARY KEY" if USE_POSTGRES else "INTEGER PRIMARY KEY AUTOINCREMENT"
+    ts = "TIMESTAMP DEFAULT CURRENT_TIMESTAMP" if USE_POSTGRES else "DATETIME DEFAULT CURRENT_TIMESTAMP"
+
+    cursor.execute(f"""
     CREATE TABLE IF NOT EXISTS especificaciones_equipos (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id {pk},
         identificador TEXT UNIQUE,
         peso_gancho_kg REAL,
         capacidad_max_ton REAL,
         empresa_id INTEGER
     )
     """)
-    
-    cursor.execute("""
+
+    cursor.execute(f"""
     CREATE TABLE IF NOT EXISTS registros (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id {pk},
         categoria TEXT,
         identificador TEXT UNIQUE,
         nombre TEXT,
         empresa_id INTEGER
     )
     """)
-    
-    cursor.execute("""
+
+    cursor.execute(f"""
     CREATE TABLE IF NOT EXISTS tablas_carga_equipos (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id {pk},
         identificador TEXT,
         radio_m REAL,
         capacidad_kg REAL
     )
     """)
-    
-    cursor.execute("""
+
+    cursor.execute(f"""
     CREATE TABLE IF NOT EXISTS historial_rigging_plans (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        fecha DATETIME DEFAULT CURRENT_TIMESTAMP,
+        id {pk},
+        fecha {ts},
         descripcion TEXT,
         responsable TEXT,
         datos_json TEXT,
@@ -109,7 +148,7 @@ def init_db():
         contrato_id INTEGER
     )
     """)
-    
+
     cursor.execute("SELECT COUNT(*) FROM especificaciones_equipos")
     if cursor.fetchone()[0] == 0:
         specs = [
@@ -117,7 +156,7 @@ def init_db():
             ("Grove GMK 3060-1", 250.0, 60.0, 0),
             ("Tadano ATF 100G-4", 450.0, 100.0, 0)
         ]
-        cursor.executemany("INSERT INTO especificaciones_equipos (identificador, peso_gancho_kg, capacidad_max_ton, empresa_id) VALUES (?, ?, ?, ?)", specs)
+        cursor.executemany(_adapt("INSERT INTO especificaciones_equipos (identificador, peso_gancho_kg, capacidad_max_ton, empresa_id) VALUES (?, ?, ?, ?)"), specs)
         
         ltm_chart = [
             ("Liebherr LTM 1050-3.1", 3.0, 50000.0),
@@ -158,7 +197,7 @@ def init_db():
             ("Tadano ATF 100G-4", 18.0, 13000.0),
             ("Tadano ATF 100G-4", 20.0, 10800.0),
         ]
-        cursor.executemany("INSERT INTO tablas_carga_equipos (identificador, radio_m, capacidad_kg) VALUES (?, ?, ?)", ltm_chart + gmk_chart + tadano_chart)
+        cursor.executemany(_adapt("INSERT INTO tablas_carga_equipos (identificador, radio_m, capacidad_kg) VALUES (?, ?, ?)"), ltm_chart + gmk_chart + tadano_chart)
         
         registros = [
             ("Elementos de izaje", "ES-SYN-5T", "Eslinga Sintética 5 Ton 4m", 0),
@@ -168,7 +207,7 @@ def init_db():
             ("Equipo_Pesado", "GR-MOB-02", "Grúa Móvil Grove 3060 [Patente WX-YZ-34]", 0),
             ("Equipo_Pesado", "GR-MOB-03", "Grúa Móvil Tadano 100G [Patente EF-GH-56]", 0)
         ]
-        cursor.executemany("INSERT INTO registros (categoria, identificador, nombre, empresa_id) VALUES (?, ?, ?, ?)", registros)
+        cursor.executemany(_adapt("INSERT INTO registros (categoria, identificador, nombre, empresa_id) VALUES (?, ?, ?, ?)"), registros)
         
     conn.commit()
     conn.close()

@@ -5,3 +5,6 @@ pandas>=2.2
 numpy>=1.26
 matplotlib>=3.8
 reportlab>=4.1
+# Driver Postgres para producción (Supabase). En local con SQLite no se usa,
+# pero se instala igual para que el despliegue funcione sin cambios.
+psycopg2-binary>=2.9

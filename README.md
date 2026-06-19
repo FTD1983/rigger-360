@@ -41,14 +41,35 @@ streamlit run calculadora_izaje.py
 
 La app abre en `http://localhost:8501`.
 
-## ⚙️ Configuración
+## ⚙️ Configuración y base de datos
 
-| Variable de entorno | Descripción | Por defecto |
+La app es **dual**: usa **Postgres (Supabase)** si encuentra una cadena de conexión y, si no, **SQLite** automáticamente. El mismo código funciona en local y en producción sin cambios.
+
+| Variable / secreto | Descripción | Por defecto |
 |---|---|---|
-| `IZAJE_DB_PATH` | Ruta del archivo SQLite | `./izaje.db` |
-| `IZAJE_DATA_DIR` | Carpeta de datos | carpeta del script |
+| `st.secrets["postgres"]["url"]` | Cadena de conexión Postgres (Streamlit Cloud) | — |
+| `DATABASE_URL` / `SUPABASE_DB_URL` | Cadena de conexión Postgres (entorno) | — |
+| `IZAJE_DB_PATH` | Ruta del archivo SQLite (modo local) | `./izaje.db` |
+| `IZAJE_DATA_DIR` | Carpeta de datos (modo local) | carpeta del script |
 
-> ⚠️ **No** ejecutes con la base de datos dentro de OneDrive/Dropbox: la sincronización de archivos puede provocar bloqueos. Usa `IZAJE_DB_PATH` para apuntar a una carpeta local o a un volumen persistente.
+- Si **no** hay cadena Postgres → SQLite (datos locales, no persisten en hosts efímeros).
+- Si **hay** cadena Postgres → todo se guarda en Supabase (persistente).
+
+> ⚠️ En modo SQLite, **no** ejecutes con la base de datos dentro de OneDrive/Dropbox: la sincronización puede provocar bloqueos. Usa `IZAJE_DB_PATH`.
+
+### 🐘 Configurar Supabase (gratis y persistente)
+
+1. Crea un proyecto en [supabase.com](https://supabase.com) (plan Free).
+2. **Project Settings → Database → Connection string** → copia la de **Connection pooling** (Transaction, puerto `6543`).
+3. Añade `?sslmode=require` al final.
+4. En Streamlit Cloud: **Manage app → Settings → Secrets** y pega:
+   ```toml
+   [postgres]
+   url = "postgresql://postgres.xxxx:TU_PASSWORD@aws-0-region.pooler.supabase.com:6543/postgres?sslmode=require"
+   ```
+5. La app crea las tablas automáticamente en el primer arranque (no necesitas SQL manual).
+
+Ver plantilla en [.streamlit/secrets.toml.example](.streamlit/secrets.toml.example).
 
 ## ☁️ Despliegue en producción
 
