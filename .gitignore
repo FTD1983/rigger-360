@@ -1,0 +1,28 @@
+# --- Base de datos local (no versionar: contiene datos de operación) ---
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.Python
+
+# --- Streamlit / secretos ---
+.streamlit/secrets.toml
+
+# --- Sistema operativo / editores ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# --- Salidas generadas ---
+*.pdf
+*.log

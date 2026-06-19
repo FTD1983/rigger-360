@@ -1,0 +1,7 @@
+# Rigger 360° — dependencias de producción
+# Versiones mínimas verificadas. Para reproducibilidad exacta usa "pip freeze".
+streamlit>=1.40,<2
+pandas>=2.2
+numpy>=1.26
+matplotlib>=3.8
+reportlab>=4.1

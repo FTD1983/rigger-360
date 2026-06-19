@@ -1,0 +1,17 @@
+# Tema coherente con el diseño dark "Rigger 360°".
+# Mantiene la identidad visual en escritorio, tablet y móvil.
+[theme]
+base = "dark"
+primaryColor = "#3b82f6"
+backgroundColor = "#0b0f19"
+secondaryBackgroundColor = "#1e293b"
+textColor = "#f8fafc"
+font = "sans serif"
+
+[server]
+# Subida de fotos de evidencia: límite razonable para móvil.
+maxUploadSize = 25
+headless = true
+
+[browser]
+gatherUsageStats = false
