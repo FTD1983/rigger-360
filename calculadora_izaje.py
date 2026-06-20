@@ -418,42 +418,53 @@ class StandalonePDFEngine:
     @staticmethod
     def generar(template_name, obj, logo_app=None, logo_cliente=None):
         buffer = io.BytesIO()
-        doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=36, leftMargin=36, topMargin=36, bottomMargin=36)
+        doc = SimpleDocTemplate(buffer, pagesize=letter, rightMargin=24, leftMargin=24, topMargin=22, bottomMargin=20)
         story = []
-        
+
+        # --- Escala adaptativa: el tándem (2 grúas) duplica tablas y memoria de
+        #     cálculo, por eso usa fuentes/gráficos más pequeños para caber en
+        #     una sola página carta. ---
+        tand = bool(obj.get('es_tandem'))
+        fs   = 6   if tand else 7      # texto base
+        fsh  = 8   if tand else 9      # encabezados de sección
+        fst  = 13  if tand else 15     # título
+        fsm  = 5.5 if tand else 6.5    # memoria de cálculo (tabla)
+        ch_w = 180 if tand else 215    # ancho de gráfico
+        ch_h = 112 if tand else 135    # alto de gráfico
+
         styles = getSampleStyleSheet()
-        
+
         title_style = ParagraphStyle(
             'TitleStyle',
             parent=styles['Heading1'],
-            fontSize=16,
-            leading=18,
+            fontSize=fst,
+            leading=fst + 1,
             textColor=colors.HexColor('#1e3a8a'),
-            spaceAfter=4
+            spaceAfter=0
         )
         subtitle_style = ParagraphStyle(
             'SubtitleStyle',
             parent=styles['Normal'],
-            fontSize=8,
-            leading=10,
+            fontSize=fs - 1,
+            leading=fs,
             textColor=colors.HexColor('#475569'),
-            spaceAfter=8
+            spaceAfter=0
         )
         heading_style = ParagraphStyle(
             'HeadingStyle',
             parent=styles['Heading2'],
-            fontSize=10,
-            leading=12,
+            fontSize=fsh,
+            leading=fsh + 1,
             textColor=colors.HexColor('#0f172a'),
-            spaceBefore=6,
-            spaceAfter=4,
+            spaceBefore=4,
+            spaceAfter=2,
             keepWithNext=True
         )
         body_style = ParagraphStyle(
             'BodyStyle',
             parent=styles['Normal'],
-            fontSize=8,
-            leading=10,
+            fontSize=fs,
+            leading=fs + 1.5,
             textColor=colors.HexColor('#334155')
         )
         body_bold_style = ParagraphStyle(
@@ -464,15 +475,40 @@ class StandalonePDFEngine:
         math_style = ParagraphStyle(
             'MathStyle',
             parent=styles['Normal'],
-            fontSize=8,
-            leading=10,
-            textColor=colors.HexColor('#0f172a'),
-            leftIndent=15,
-            spaceAfter=3
+            fontSize=fsm,
+            leading=fsm + 1.5,
+            textColor=colors.HexColor('#0f172a')
         )
-        
-        story.append(Paragraph("PLAN DE IZAJE Y RIGGING", title_style))
-        story.append(Paragraph(f"Generado el {datetime.now().strftime('%d/%m/%Y %H:%M')} | Rigger 360°", subtitle_style))
+
+        # --- Cabecera: título + estado de la operación en una sola franja ---
+        max_util_h = max(obj.get('grua_a', {}).get('utilizacion', 0), obj.get('grua_b', {}).get('utilizacion', 0) if tand else 0)
+        max_rig_h  = max(obj.get('grua_a', {}).get('util_rigging', 0), obj.get('grua_b', {}).get('util_rigging', 0) if tand else 0)
+        max_sh_h   = max(obj.get('grua_a', {}).get('shackle_util', 0), obj.get('grua_b', {}).get('shackle_util', 0) if tand else 0)
+        max_su_h   = max(obj.get('grua_a', {}).get('suelo_util', 0), obj.get('grua_b', {}).get('suelo_util', 0) if tand else 0)
+        v_h, vmax_h = obj.get('viento', 0), obj.get('viento_max', 32)
+        if max_util_h > 100 or max_rig_h > 100 or max_sh_h > 100 or max_su_h > 100 or v_h >= vmax_h:
+            st_txt, st_bg, st_fg = "NO AUTORIZADO (NO-GO)", colors.HexColor('#fee2e2'), colors.HexColor('#991b1b')
+        elif max_util_h > 75 or max_rig_h > 75 or max_sh_h > 75 or max_su_h > 75:
+            st_txt, st_bg, st_fg = "IZAJE CRÍTICO (SUPERVISIÓN)", colors.HexColor('#fef3c7'), colors.HexColor('#92400e')
+        else:
+            st_txt, st_bg, st_fg = "OPERACIÓN SEGURA", colors.HexColor('#dcfce7'), colors.HexColor('#166534')
+
+        head_title = [
+            Paragraph("PLAN DE IZAJE Y RIGGING", title_style),
+            Paragraph(f"Generado el {datetime.now().strftime('%d/%m/%Y %H:%M')} | Rigger 360°", subtitle_style),
+        ]
+        badge_style = ParagraphStyle('BadgeHead', parent=body_bold_style, fontSize=fsh + 1, leading=fsh + 2, textColor=st_fg, alignment=1)
+        head_table = Table([[head_title, Paragraph(f"ESTADO: {st_txt}", badge_style)]], colWidths=[330, 210])
+        head_table.setStyle(TableStyle([
+            ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+            ('BACKGROUND', (1,0), (1,0), st_bg),
+            ('BOX', (1,0), (1,0), 1.2, st_fg),
+            ('LEFTPADDING', (0,0), (0,0), 0),
+            ('TOPPADDING', (0,0), (-1,-1), 4),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 4),
+        ]))
+        story.append(head_table)
+        story.append(Spacer(1, 4))
         
         # --- Page 1: General Info & Crane Details ---
         info_data = [
@@ -563,12 +599,12 @@ class StandalonePDFEngine:
                 dark_mode=False
             )
             
-        img_diag = Image(img_diag_buf, width=250, height=165)
+        img_diag = Image(img_diag_buf, width=ch_w, height=ch_h)
         if img_lmi_buf:
-            img_lmi = Image(img_lmi_buf, width=250, height=165)
-            charts_table = Table([[img_diag, img_lmi]], colWidths=[270, 270])
+            img_lmi = Image(img_lmi_buf, width=ch_w, height=ch_h)
+            charts_table = Table([[img_diag, img_lmi]], colWidths=[282, 282])
         else:
-            charts_table = Table([[img_diag]], colWidths=[540])
+            charts_table = Table([[img_diag]], colWidths=[564])
             
         charts_table.setStyle(TableStyle([
             ('ALIGN', (0,0), (-1,-1), 'CENTER'),
@@ -581,108 +617,64 @@ class StandalonePDFEngine:
         story.append(charts_table)
         story.append(Spacer(1, 4))
         
-        max_util = max(obj.get('grua_a', {}).get('utilizacion', 0), obj.get('grua_b', {}).get('utilizacion', 0) if obj.get('es_tandem') else 0)
-        max_rig = max(obj.get('grua_a', {}).get('util_rigging', 0), obj.get('grua_b', {}).get('util_rigging', 0) if obj.get('es_tandem') else 0)
-        max_sh = max(obj.get('grua_a', {}).get('shackle_util', 0), obj.get('grua_b', {}).get('shackle_util', 0) if obj.get('es_tandem') else 0)
-        max_suelo = max(obj.get('grua_a', {}).get('suelo_util', 0), obj.get('grua_b', {}).get('suelo_util', 0) if obj.get('es_tandem') else 0)
-        viento = obj.get('viento', 0)
-        viento_max = obj.get('viento_max', 32)
+        # --- Memoria de cálculo compacta (tabla: concepto | sustitución | resultado) ---
+        story.append(Paragraph("MEMORIA DE CÁLCULO (ASME B30.5 / B30.26 / B30.9)", heading_style))
 
-        if max_util > 100 or max_rig > 100 or max_sh > 100 or max_suelo > 100 or viento >= viento_max:
-            status_text = "ESTADO: NO AUTORIZADO (NO-GO) ❌"
-            bg_badge = colors.HexColor('#fee2e2')
-            text_color = colors.HexColor('#991b1b')
-        elif max_util > 75 or max_rig > 75 or max_sh > 75 or max_suelo > 75:
-            status_text = "ESTADO: IZAJE CRÍTICO (REFIERA A SUPERVISIÓN) ⚠️"
-            bg_badge = colors.HexColor('#fef3c7')
-            text_color = colors.HexColor('#92400e')
-        else:
-            status_text = "ESTADO: OPERACIÓN SEGURA ✅"
-            bg_badge = colors.HexColor('#dcfce7')
-            text_color = colors.HexColor('#166534')
-            
-        status_style = ParagraphStyle(
-            'StatusStyle',
-            parent=body_bold_style,
-            fontSize=10,
-            leading=12,
-            textColor=text_color,
-            alignment=1
-        )
-        
-        status_table = Table([[Paragraph(status_text, status_style)]], colWidths=[540])
-        status_table.setStyle(TableStyle([
-            ('BACKGROUND', (0,0), (-1,-1), bg_badge),
-            ('ALIGN', (0,0), (-1,-1), 'CENTER'),
-            ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-            ('BOTTOMPADDING', (0,0), (-1,-1), 5),
-            ('TOPPADDING', (0,0), (-1,-1), 5),
-            ('BOX', (0,0), (-1,-1), 1.2, text_color),
-        ]))
-        story.append(status_table)
-        
-        # --- Page 2: Mathematical Memory and Signatures ---
-        story.append(PageBreak())
-        story.append(Paragraph("<b>MEMORIA DE CÁLCULO TÉCNICO Y ECUACIONES (PASO A PASO)</b>", heading_style))
-        story.append(Spacer(1, 6))
-        
-        def append_math_details(key_name, label):
+        cd_coeff = 1.5 if obj.get('tipo_carga') == 'Media' else (2.0 if obj.get('tipo_carga') == 'Alta' else 1.2)
+        mp = ParagraphStyle('MathCell', parent=math_style, alignment=0)
+        mr = ParagraphStyle('MathRes', parent=math_style, alignment=2, fontName='Helvetica-Bold')
+
+        def math_rows(key_name, label):
             g = obj.get(key_name)
             if not g:
-                return
-            story.append(Paragraph(f"<b>Grúa / Equipo: {label} ({g['id']})</b>", body_bold_style))
-            story.append(Spacer(1, 2))
-            
-            # 1. Fuerza de arrastre
-            f_wind_text = f"<b>1. Fuerza de arrastre por viento (Fw) - ASME B30.5:</b><br/>" \
-                          f"Fórmula: <i>Fw = 0.00482 * V² * A_vela * Cd</i><br/>" \
-                          f"Valores: 0.00482 * {obj['viento']}² * {obj['area_vela_m2']} * {1.5 if obj['tipo_carga']=='Media' else (2.0 if obj['tipo_carga']=='Alta' else 1.2)} = <b>{g['drag_force_kg']:.1f} Kg</b>"
-            story.append(Paragraph(f_wind_text, math_style))
-            
-            # 2. Carga bruta
-            f_gross_text = f"<b>2. Carga bruta total en gancho (Pbruta):</b><br/>" \
-                           f"Fórmula: <i>Pbruta = Pneto_prop + Rigging + Fw</i><br/>" \
-                           f"Valores: ({obj['p_neto_total']:.0f} * {g['dist_p']/100:.2f}) + {g['rigging']:.0f} + {g['drag_force_kg']:.1f} = <b>{g['bruta_con_viento']:.1f} Kg</b>"
-            story.append(Paragraph(f_gross_text, math_style))
-            
-            # 3. Tensión y factor de ángulo
-            if obj.get('cg_asim') and not obj.get('es_tandem'):
-                f_tension_text = f"<b>3. Tensión del Aparejo (CG Asimétrico):</b><br/>" \
-                                 f"Fórmula: <i>T = Pbruta * (d_opuesta / (d1+d2)) * fa</i> con <i>fa = 1 / sin(θ)</i><br/>" \
-                                 f"Valores: fa = 1 / sin({g['angulo']}°) = {g['factor_angulo']:.3f}. T = {g['tension']:.1f} Kg"
+                return []
+            peso_grua = g.get('peso_propio_grua', g.get('capacidad_max_ton', 50.0) * 1000)
+            if obj.get('cg_asim') and not tand:
+                t_form = f"T = Pbruta·(d/Σd)·fa ;  fa = 1/sin({g['angulo']}°) = {g['factor_angulo']:.3f}"
             else:
-                f_tension_text = f"<b>3. Tensión del Aparejo (Símétrica/Tándem):</b><br/>" \
-                                 f"Fórmula: <i>T = (Pbruta * fa) / N_ramales</i> con <i>fa = 1 / sin(θ)</i><br/>" \
-                                 f"Valores: fa = 1 / sin({g['angulo']}°) = {g['factor_angulo']:.3f}. T = ({g['bruta_con_viento']:.1f} * {g['factor_angulo']:.3f}) / {g['ramales']} = <b>{g['tension']:.1f} Kg</b>"
-            story.append(Paragraph(f_tension_text, math_style))
-            
-            # 4. Presión en el terreno
-            peso_propio_grua = g.get('peso_propio_grua', g.get('capacidad_max_ton', 50.0) * 1000)
-            f_soil_text = f"<b>4. Reacción del estabilizador y Presión en Suelo (Psuelo):</b><br/>" \
-                          f"Fórmula: <i>F_outrigger = 0.75 * (W_grua + Pbruta * F_tandem)</i>,  <i>Psuelo = F_outrigger / Area_Pad</i><br/>" \
-                          f"Valores: F_outrigger = 0.75 * ({peso_propio_grua:,.0f} Kg + {g['bruta']:.0f} Kg * {g['factor_tandem']}) = {g['f_outrigger_kg']:,.0f} Kg<br/>" \
-                          f"Presión: {g['f_outrigger_kg']:,.0f} / ({obj['pad_ancho']} * {obj['pad_largo']}) = <b>{g['presion_suelo_ton_m2']:.1f} Ton/m²</b> (Límite: {obj['limite_suelo']/1000:.1f} Ton/m²)"
-            story.append(Paragraph(f_soil_text, math_style))
-            story.append(Spacer(1, 4))
-            
-        append_math_details('grua_a', "Unidad A")
-        append_math_details('grua_b', "Unidad B (Tándem)")
+                t_form = f"T = (Pbruta·fa)/N ;  fa = 1/sin({g['angulo']}°) = {g['factor_angulo']:.3f} ;  N = {g['ramales']}"
+            rows = [
+                [Paragraph(f"<b>{label} ({g['id']})</b>", mp), ""],
+                [Paragraph(f"<b>1. Viento Fw</b>  =  0.00482·V²·A·Cd  =  0.00482·{obj['viento']}²·{obj['area_vela_m2']}·{cd_coeff}", mp), Paragraph(f"{g['drag_force_kg']:.1f} Kg", mr)],
+                [Paragraph(f"<b>2. Carga bruta</b>  =  (Pneto·d) + Rigging + Fw  =  ({obj['p_neto_total']:.0f}·{g['dist_p']/100:.2f}) + {g['rigging']:.0f} + {g['drag_force_kg']:.1f}", mp), Paragraph(f"{g['bruta_con_viento']:.1f} Kg", mr)],
+                [Paragraph(f"<b>3. Tensión ramal</b>  =  {t_form}", mp), Paragraph(f"{g['tension']:.1f} Kg", mr)],
+                [Paragraph(f"<b>4. Presión suelo</b>  =  0.75·(W_grúa + Pbruta·Ft)/Área_pad  =  0.75·({peso_grua:,.0f} + {g['bruta']:.0f}·{g['factor_tandem']})/({obj['pad_ancho']}·{obj['pad_largo']})  ·  Lím {obj['limite_suelo']/1000:.1f} t/m²", mp), Paragraph(f"{g['presion_suelo_ton_m2']:.1f} t/m²", mr)],
+            ]
+            return rows
+
+        math_data = math_rows('grua_a', "Unidad A") + math_rows('grua_b', "Unidad B (Tándem)")
+        math_table = Table(math_data, colWidths=[470, 94])
+        m_styles = [
+            ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+            ('GRID', (0,0), (-1,-1), 0.4, colors.HexColor('#e2e8f0')),
+            ('SPAN', (0,0), (-1,0)),
+            ('TOPPADDING', (0,0), (-1,-1), 2),
+            ('BOTTOMPADDING', (0,0), (-1,-1), 2),
+            ('LEFTPADDING', (0,0), (-1,-1), 5),
+            ('RIGHTPADDING', (0,0), (-1,-1), 5),
+            ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#eef2ff')),
+        ]
+        # Encabezado de la segunda grúa (si existe) ocupa toda la fila.
+        if obj.get('grua_b'):
+            m_styles.append(('SPAN', (0,5), (-1,5)))
+            m_styles.append(('BACKGROUND', (0,5), (-1,5), colors.HexColor('#eef2ff')))
+        math_table.setStyle(TableStyle(m_styles))
+        story.append(math_table)
         
-        # --- Cuadro de Firmas ---
-        story.append(Spacer(1, 15))
+        # --- Cuadro de Firmas (compacto, al pie) ---
+        story.append(Spacer(1, 10 if tand else 16))
         firma_data = [
-            ["", "", ""],
             ["___________________________", "___________________________", "___________________________"],
             ["Operador de Grúa", "Rigger de Maniobra", "Supervisor de Izaje"],
             ["Firma / Rut:", "Firma / Rut:", "Firma / Rut:"]
         ]
-        firma_table = Table(firma_data, colWidths=[180, 180, 180])
+        firma_table = Table(firma_data, colWidths=[188, 188, 188])
         firma_table.setStyle(TableStyle([
             ('ALIGN', (0,0), (-1,-1), 'CENTER'),
             ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
             ('TEXTCOLOR', (0,0), (-1,-1), colors.HexColor('#475569')),
-            ('FONTNAME', (0,2), (-1,2), 'Helvetica-Bold'),
-            ('FONTSIZE', (0,2), (-1,3), 8),
+            ('FONTNAME', (0,1), (-1,1), 'Helvetica-Bold'),
+            ('FONTSIZE', (0,0), (-1,-1), fs),
             ('BOTTOMPADDING', (0,0), (-1,-1), 1),
             ('TOPPADDING', (0,0), (-1,-1), 1),
         ]))
