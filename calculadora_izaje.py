@@ -15,9 +15,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from reportlab.lib.pagesizes import letter
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image, PageBreak, Image, PageBreak
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image, PageBreak
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
+from reportlab.lib.utils import ImageReader
 
 # --- CONFIGURACIÓN Y BASE DE DATOS (DUAL: Postgres/Supabase o SQLite) ---
 # En producción usa Postgres (Supabase) si encuentra una cadena de conexión.
@@ -679,7 +680,55 @@ class StandalonePDFEngine:
             ('TOPPADDING', (0,0), (-1,-1), 1),
         ]))
         story.append(firma_table)
-        
+
+        # --- Anexo Fotográfico (evidencia) ---
+        # Va en página aparte para no romper el layout compacto de la página 1.
+        fotos = obj.get('fotos_evidencia') or []
+        if fotos:
+            story.append(PageBreak())
+            story.append(Paragraph("ANEXO FOTOGRÁFICO — EVIDENCIA", heading_style))
+            story.append(Spacer(1, 6))
+
+            cell_w, max_h = 270, 200   # 2 fotos por fila dentro del ancho útil (564pt)
+            celdas = []
+            for label, fb in fotos:
+                try:
+                    ir = ImageReader(io.BytesIO(fb))
+                    iw, ih = ir.getSize()
+                    ratio = ih / float(iw) if iw else 0.75
+                    w = cell_w
+                    h = w * ratio
+                    if h > max_h:
+                        h = max_h
+                        w = h / ratio if ratio else cell_w
+                    img = Image(io.BytesIO(fb), width=w, height=h)
+                    cap = Paragraph(f"<b>{label}</b>", subtitle_style)
+                    celdas.append([img, cap])
+                except Exception:
+                    continue
+
+            # Agrupar en filas de 2 columnas.
+            filas = []
+            for i in range(0, len(celdas), 2):
+                par = celdas[i:i+2]
+                fila_img = [c[0] for c in par]
+                fila_cap = [c[1] for c in par]
+                while len(fila_img) < 2:
+                    fila_img.append("")
+                    fila_cap.append("")
+                filas.append(fila_img)
+                filas.append(fila_cap)
+
+            if filas:
+                fotos_table = Table(filas, colWidths=[282, 282])
+                fotos_table.setStyle(TableStyle([
+                    ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+                    ('VALIGN', (0,0), (-1,-1), 'TOP'),
+                    ('TOPPADDING', (0,0), (-1,-1), 4),
+                    ('BOTTOMPADDING', (0,0), (-1,-1), 8),
+                ]))
+                story.append(fotos_table)
+
         doc.build(story)
         buffer.seek(0)
         return buffer.getvalue()
@@ -1068,6 +1117,9 @@ def render_calculadora_izaje(db_path, filtros):
                 id_fisico = c_maq2.selectbox("Máquina Física (Patente/Código)", lista_gruas_fisicas, key=f"id_fis_{key}", index=idx_fisica)
                 
                 up_fotos = st.file_uploader("Fotos Evidencia", type=['png','jpg'], key=f"u_{key}", accept_multiple_files=True)
+                fotos_bytes = [f.getvalue() for f in up_fotos] if up_fotos else []
+                if fotos_bytes:
+                    st.caption(f"📸 {len(fotos_bytes)} foto(s) adjunta(s) — se incluirán en el PDF.")
 
                 p_gancho, cap_tab = 50.0, 5000.0
                 if id_eq != "Manual" and not df_specs.empty:
@@ -1150,7 +1202,8 @@ def render_calculadora_izaje(db_path, filtros):
                     "shackle_wll": shackle_wll, "dd_factor": dd_factor,
                     "capacidad_max_ton": cap_max_ton_val,
                     "peso_operativo_ton": peso_operativo_ton,
-                    "peso_operativo_kg": peso_operativo_ton * 1000.0
+                    "peso_operativo_kg": peso_operativo_ton * 1000.0,
+                    "fotos": fotos_bytes, "foto_label": label
                 }
 
         cfg_global = {
@@ -1263,15 +1316,22 @@ def render_calculadora_izaje(db_path, filtros):
                     if lmi_diag: c_img2.image(lmi_diag, caption="Curva LMI Grúa y Punto Operativo", use_container_width=True)
             except Exception as e: st.caption(f"Diagrama no disponible: {e}")
 
+            fotos_evidencia = []
+            for _cfg in (cfg_a, cfg_b):
+                if _cfg and _cfg.get("fotos"):
+                    for _fb in _cfg["fotos"]:
+                        fotos_evidencia.append((_cfg.get("foto_label", "Equipo"), _fb))
+
             obj_final = {
-                **cfg_global, 
-                "p_neto_total": p_neto, 
-                "descripcion": desc, 
-                "empresa": client, 
-                "tipo_carga": vela, 
-                "grua_a": res_a, 
-                "grua_b": res_b, 
-                "es_critico": (m_ue > 75 or m_ur > 75 or max_sh > 75 or max_suelo > 75)
+                **cfg_global,
+                "p_neto_total": p_neto,
+                "descripcion": desc,
+                "empresa": client,
+                "tipo_carga": vela,
+                "grua_a": res_a,
+                "grua_b": res_b,
+                "es_critico": (m_ue > 75 or m_ur > 75 or max_sh > 75 or max_suelo > 75),
+                "fotos_evidencia": fotos_evidencia
             }
 
             ca1, ca2 = st.columns(2)
@@ -1281,8 +1341,10 @@ def render_calculadora_izaje(db_path, filtros):
             except Exception as e: ca1.error(f"Error PDF: {e}")
 
             if ca2.button("💾 GUARDAR EN REGISTRO", use_container_width=True):
+                # Las fotos (bytes) no son serializables a JSON; se excluyen del registro histórico.
+                obj_save = {k: v for k, v in obj_final.items() if k != "fotos_evidencia"}
                 ejecutar_query(db_path, "INSERT INTO historial_rigging_plans (descripcion, responsable, datos_json, empresa_id, contrato_id) VALUES (?,?,?,?,?)",
-                             (desc, st.session_state.username, json.dumps(obj_final), filtros.get('empresa_id', 0), filtros.get('contrato_id', 0)), commit=True)
+                             (desc, st.session_state.username, json.dumps(obj_save), filtros.get('empresa_id', 0), filtros.get('contrato_id', 0)), commit=True)
                 st.success("Guardado exitosamente.")
                 st.rerun()
 
