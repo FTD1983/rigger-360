@@ -681,6 +681,31 @@ class StandalonePDFEngine:
         ]))
         story.append(firma_table)
 
+        # --- Entorno de Trabajo (delimitaciones y señalización, en HD) ---
+        # Imágenes a ancho completo para conservar el detalle. Van en página
+        # aparte; reportlab pagina solo si no caben.
+        entorno = obj.get('entorno_trabajo') or []
+        if entorno:
+            story.append(PageBreak())
+            story.append(Paragraph("ENTORNO DE TRABAJO — DELIMITACIONES Y SEÑALIZACIÓN", heading_style))
+            story.append(Spacer(1, 6))
+            full_w, max_h = 520, 330   # ancho útil ~564pt; alto tope para ~2 por página
+            for idx, eb in enumerate(entorno, 1):
+                try:
+                    ir = ImageReader(io.BytesIO(eb))
+                    iw, ih = ir.getSize()
+                    ratio = ih / float(iw) if iw else 0.66
+                    w = full_w
+                    h = w * ratio
+                    if h > max_h:
+                        h = max_h
+                        w = h / ratio if ratio else full_w
+                    story.append(Image(io.BytesIO(eb), width=w, height=h))
+                    story.append(Paragraph(f"Vista {idx} del entorno de trabajo", subtitle_style))
+                    story.append(Spacer(1, 10))
+                except Exception:
+                    continue
+
         # --- Anexo Fotográfico (evidencia) ---
         # Va en página aparte para no romper el layout compacto de la página 1.
         fotos = obj.get('fotos_evidencia') or []
@@ -1095,6 +1120,16 @@ def render_calculadora_izaje(db_path, filtros):
             pad_ancho = cs2.number_input("Ancho del Pad de Estabilizador (m)", 0.1, 5.0, float(cd.get("pad_ancho", 1.0)), step=1.0)
             pad_largo = cs3.number_input("Largo del Pad de Estabilizador (m)", 0.1, 5.0, float(cd.get("pad_largo", 1.0)), step=1.0)
 
+        with st.expander("🚧 ENTORNO DE TRABAJO (Delimitaciones y Señalización)", expanded=False):
+            st.caption("Sube hasta 3 imágenes en alta definición del área: delimitaciones, señalización, radio de giro y zonas de exclusión. Se incluyen en el PDF.")
+            up_entorno = st.file_uploader("Imágenes del Entorno (HD)", type=['png','jpg','jpeg'], key="u_entorno", accept_multiple_files=True)
+            entorno_bytes = [f.getvalue() for f in up_entorno] if up_entorno else []
+            if len(entorno_bytes) > 3:
+                st.warning("⚠️ Solo se incluirán las primeras 3 imágenes en el PDF.")
+                entorno_bytes = entorno_bytes[:3]
+            if entorno_bytes:
+                st.caption(f"🖼️ {len(entorno_bytes)} imagen(es) del entorno cargada(s).")
+
         def gui_setup_equipo(label, key, pct):
             st.markdown(f"#### {label} ({pct}%)")
             ed = cd.get(f"grua_{key}", {})
@@ -1331,7 +1366,8 @@ def render_calculadora_izaje(db_path, filtros):
                 "grua_a": res_a,
                 "grua_b": res_b,
                 "es_critico": (m_ue > 75 or m_ur > 75 or max_sh > 75 or max_suelo > 75),
-                "fotos_evidencia": fotos_evidencia
+                "fotos_evidencia": fotos_evidencia,
+                "entorno_trabajo": entorno_bytes
             }
 
             ca1, ca2 = st.columns(2)
@@ -1341,8 +1377,8 @@ def render_calculadora_izaje(db_path, filtros):
             except Exception as e: ca1.error(f"Error PDF: {e}")
 
             if ca2.button("💾 GUARDAR EN REGISTRO", use_container_width=True):
-                # Las fotos (bytes) no son serializables a JSON; se excluyen del registro histórico.
-                obj_save = {k: v for k, v in obj_final.items() if k != "fotos_evidencia"}
+                # Las imágenes (bytes) no son serializables a JSON; se excluyen del registro histórico.
+                obj_save = {k: v for k, v in obj_final.items() if k not in ("fotos_evidencia", "entorno_trabajo")}
                 ejecutar_query(db_path, "INSERT INTO historial_rigging_plans (descripcion, responsable, datos_json, empresa_id, contrato_id) VALUES (?,?,?,?,?)",
                              (desc, st.session_state.username, json.dumps(obj_save), filtros.get('empresa_id', 0), filtros.get('contrato_id', 0)), commit=True)
                 st.success("Guardado exitosamente.")
